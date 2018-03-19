@@ -312,12 +312,186 @@ string extractResults( const record& rec ){
   return result;
 }
 
+void add_best( const record* r,
+	       map<string, map<string,record>>& inventory  ){
+  auto it = inventory.find( r->variant1 );
+  if ( it == inventory.end() ){
+    map<string,record> tmp;
+    tmp.insert(make_pair(r->variant2,*r) );
+    inventory.insert(make_pair(r->variant1,tmp));
+  }
+  else {
+    auto it2 = it->second.find( r->variant2 );
+    if ( it2 == it->second.end() ){
+      it->second.insert(make_pair(r->variant2,*r));
+    }
+    else if ( it2->second.rank < r->rank ){
+      it2->second = *r;
+    }
+  }
+}
 
-void rank( ostream& os, vector<record>& records,
+unsigned int ldCompare( const UnicodeString& s1, const UnicodeString& s2 ){
+  const size_t len1 = s1.length(), len2 = s2.length();
+  vector<unsigned int> col(len2+1), prevCol(len2+1);
+  for ( unsigned int i = 0; i < prevCol.size(); ++i ){
+    prevCol[i] = i;
+  }
+  for ( unsigned int i = 0; i < len1; ++i ) {
+    col[0] = i+1;
+    for ( unsigned int j = 0; j < len2; ++j )
+      col[j+1] = min( min( 1 + col[j], 1 + prevCol[1 + j]),
+		      prevCol[j] + (s1[i]==s2[j] ? 0 : 1) );
+    col.swap(prevCol);
+  }
+  unsigned int result = prevCol[len2];
+  return result;
+}
+
+unsigned int ld( const string& in1, const string& in2, bool caseless ){
+  UnicodeString s1 = TiCC::UnicodeFromUTF8(in1);
+  UnicodeString s2 = TiCC::UnicodeFromUTF8(in2);
+  if ( caseless ){
+    s1.toLower();
+    s2.toLower();
+  }
+  return ldCompare( s1, s2 );
+}
+
+class chain_class {
+public:
+  chain_class(): chain_class( 0,false ){};
+  chain_class( int v, bool c ): verbosity(v), caseless(c){};
+  bool fill( const record& );
+  void debug_info( const string& );
+  void output( const string& );
+private:
+  map<string,string> heads;
+  map<string, set<string>> table;
+  map< string, size_t > var_freq;
+  int verbosity;
+  bool caseless;
+};
+
+bool chain_class::fill( const record& rec ){
+  string a_word = rec.variant1; // a possibly correctable word
+  size_t freq1 = rec.freq1;
+  var_freq[a_word] = freq1;
+  string candidate = rec.variant2; // a Correction Candidate
+  size_t freq2 = rec.freq2;
+  var_freq[candidate] = freq2;
+  if ( verbosity > 3 ){
+    cerr << "word=" << a_word << " CC=" << candidate << endl;
+  }
+  string head = heads[a_word];
+  if ( head.empty() ){
+    // this word does not have a 'head' yet
+    if ( verbosity > 3 ){
+      cerr << "word: " << a_word << " NOT in heads " << endl;
+    }
+    string head2 = heads[candidate];
+    if ( head2.empty() ){
+      // the correction candidate also has no head
+      // we add it as a new head for a_word, with a table
+      if ( verbosity > 3 ){
+	cerr << "candidate : " << candidate << " not in heads too." << endl;
+      }
+      if ( verbosity > 3 ){
+	cerr << "add (" << a_word << "," << candidate << ") to heads " << endl;
+	cerr << "add " << a_word << " to table of " << candidate << endl;
+      }
+      heads[a_word] = candidate;
+      table[candidate].insert( a_word );
+    }
+    else {
+      // the candidate knows its head already
+      // add the word to the table of that head, and also register
+      // the head as an (intermediate) head of a_word
+      if ( verbosity > 3 ){
+	cerr << "BUT: Candidate " << candidate << " has head: "
+	     << head2 << endl;
+	cerr << "add " << a_word << " to table[" << head2 << "]" << endl;
+	cerr << "AND add " << head2 << " as a head of " << a_word << endl;
+      }
+      heads[a_word] = head2;
+      table[head2].insert( a_word );
+    }
+  }
+  else {
+    // the word has a head
+    if ( verbosity > 3 ){
+      cerr << "word: " << a_word << " IN heads " << head << endl;
+    }
+    auto const tit = table.find( head );
+    if ( tit != table.end() ){
+      // there MUST be some candidates registered for the head
+      if ( tit->second.find( a_word ) == tit->second.end() ){
+	if ( verbosity > 3 ){
+	  cerr << "add " << a_word << " to table of " << head << endl;
+	}
+	table[head].insert( a_word );
+      }
+    }
+    else {
+      string msg = "Error: " + a_word
+	+ " has a heads entry, but no table entry!";
+      throw logic_error( msg );
+    }
+  }
+  return true;
+}
+
+void chain_class::debug_info( const string& name ){
+  string out_file = name + ".debug";
+  ofstream db( out_file );
+  using TiCC::operator<<;
+  for ( const auto& it : table ){
+    db << var_freq[it.first] << " " << it.first
+       << " " << it.second << endl;
+  }
+  cout << "debug info stored in " << out_file << endl;
+}
+
+void chain_class::output( const string& out_file ){
+  ofstream os( out_file );
+#pragma omp parallel for
+  for ( size_t i=0; i < table.size(); ++i ){
+    auto t_it = table.begin();
+    advance( t_it, i );
+    for ( const auto& s : t_it->second ){
+#pragma omp critical
+      {
+	os << s << "#" << var_freq[s] << "#" << t_it->first
+	   << "#" << var_freq[t_it->first]
+	   << "#" << ld( t_it->first, s, caseless ) << "#C" << endl;
+      }
+    }
+  }
+}
+
+
+void calc_chains( const string& cf,
+		  map<string, map<string,record>>& inventory ){
+  chain_class chains( 8, true );
+  for ( const auto& r : inventory ){
+    for( const auto& r2 : r.second ){
+      chains.fill( r2.second );
+    }
+  }
+  chains.debug_info( cf );
+  chains.output( cf );
+}
+
+void rank( ostream& os,
+	   vector<record>& records,
 	   int clip,
 	   const map<bitType,size_t>& kwc_counts,
 	   const map<bitType,size_t>& kwc2_counts,
-	   ostream* db, vector<bool>& skip, int factor ){
+	   ostream* db,
+	   vector<bool>& skip,
+	   int factor,
+	   bool chain,
+	   map<string, map<string,record>>& inventory ){
   if (verbose ){
 #pragma omp critical (log)
     {
@@ -514,11 +688,21 @@ void rank( ostream& os, vector<record>& records,
   if ( recs.size() == 1 ){
     (*vit)->rank = 1.0;
     outv.insert( make_pair( 1.0 , extractResults(**vit) ) );
+    if ( chain ){
+#pragma omp critical (chain)
+      {
+	add_best( *vit, inventory  );
+      }
+    }
   }
   else {
     while ( vit != recs.end() ){
       (*vit)->rank = 1 -  (*vit)->rank/sum;
       outv.insert( make_pair( (*vit)->rank, extractResults(**vit) ) );
+#pragma omp critical (chain)
+      {
+	add_best( *vit, inventory  );
+      }
       ++vit;
     }
   }
@@ -566,7 +750,7 @@ int main( int argc, char **argv ){
   TiCC::CL_Options opts;
   try {
     opts.set_short_options( "vVho:t:" );
-    opts.set_long_options( "alph:,debugfile:,skipcols:,charconf:,charconfreq:,artifrq:,wordvec:,clip:,numvec:,threads:" );
+    opts.set_long_options( "alph:,debugfile:,skipcols:,charconf:,charconfreq:,artifrq:,wordvec:,clip:,numvec:,threads:,chain" );
     opts.init( argc, argv );
   }
   catch( TiCC::OptionError& e ){
@@ -623,6 +807,7 @@ int main( int argc, char **argv ){
       exit( EXIT_FAILURE );
     }
   }
+  bool chain = opts.extract( "chain" );
   int numThreads=1;
   value = "1";
   if ( !opts.extract( 't', value ) ){
@@ -978,6 +1163,8 @@ int main( int argc, char **argv ){
   }
   count = 0;
 
+  map<string, map<string,record>> chains;
+
   cout << "Start the work, with " << work.size()
        << " iterations on " << numThreads << " thread(s)." << endl;
 #pragma omp parallel for schedule(dynamic,1)
@@ -1022,7 +1209,11 @@ int main( int argc, char **argv ){
       }
       ++it;
     }
-    ::rank( os, records, clip, kwc_counts, kwc2_counts, db, skip, skip_factor );
+    ::rank( os, records, clip, kwc_counts, kwc2_counts,
+	    db, skip, skip_factor, chain, chains );
+  }
+  if ( chain ){
+    calc_chains( outFile , chains );
   }
   cout << "results in " << outFile << endl;
 }
