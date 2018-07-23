@@ -727,7 +727,7 @@ void classify_one_entry( const UnicodeString& orig_word, unsigned int freq,
     }
     break;
   case UNDEF:
-    throw logic_error( "this is realy odd" );
+    throw logic_error( "this is really odd" );
   }
 }
 
@@ -948,7 +948,7 @@ int main( int argc, char *argv[] ){
       v0.toLower();
       decap_clean_words[v0] += freq;
     }
-    cout << "read a blackground lexicon with " << clean_words.size()
+    cout << "read a background lexicon with " << clean_words.size()
 	 << " entries." << endl;
 
   }
@@ -983,7 +983,7 @@ int main( int argc, char *argv[] ){
     unsigned int freq = TiCC::stringTo<unsigned int>(v[1]);
     my_lexicon[orig_word] = freq;
   }
-  cout << "start classifying a lexion with " << line_cnt << " entries"<< endl;
+  cout << "start classifying a lexicon with " << line_cnt << " entries"<< endl;
   for ( const auto& wf : my_lexicon ){
     classify_one_entry( wf.first, wf.second,
 			clean_words, decap_clean_words,
